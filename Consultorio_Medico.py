@@ -1,37 +1,68 @@
 import pymongo
 from datetime import datetime, timedelta
+import re
 
 # Conectarse a MongoDB (hay que tener MongoDB abierto de manera local)
 client = pymongo.MongoClient("mongodb://localhost:27017/")
-db = client["Consultorio_medico"] #servidor
+db = client["Consultorio_medico"]  # servidor
 collection = db["Turnos"]
 
-# Inicializar la colección Turnos
+# Inicializar la colección Turnos si está vacía
 def inicializar_turnos():
-    collection.delete_many({})  # Limpiar la colección existente si hay datos previos
-
+    # Limpiar turnos antiguos
+    fecha_hoy = datetime.now().strftime("%Y-%m-%d")
+    collection.delete_many({"fecha": {"$lt": fecha_hoy}})
+    
+    # Agregar nuevos turnos si es necesario
     dias_semana = ["Lunes", "Martes", "Miércoles", "Jueves", "Viernes"]
     hora_inicio = datetime.strptime("09:00", "%H:%M")
 
     turnos = []
     fecha_inicio = datetime.now()
-    for i in range(0, 15):  # Dos semanas de turnos
-        fecha = (fecha_inicio + timedelta(days=i))
-        dia_semana = dias_semana[fecha.weekday() % len(dias_semana)]
-        for j in range(30):
-            hora_turno = (hora_inicio + timedelta(minutes=20 * j)).strftime("%H:%M")
-            turnos.append({
-                "fecha": fecha.strftime("%Y-%m-%d"),
-                "dia": dia_semana,
-                "hora": hora_turno,
-                "ocupado": False,
-                "nombre": None,
-                "apellido": None,
-                "dni": None
-            })
+    fecha_limite = fecha_inicio + timedelta(days=14)
+    
+    while fecha_inicio <= fecha_limite:
+        fecha_str = fecha_inicio.strftime("%Y-%m-%d")
+        dia_semana = dias_semana[fecha_inicio.weekday() % len(dias_semana)]
+        
+        if collection.count_documents({"fecha": fecha_str}) == 0:  # Solo agregar si no existen turnos para esa fecha
+            for j in range(30):
+                hora_turno = (hora_inicio + timedelta(minutes=20 * j)).strftime("%H:%M")
+                turnos.append({
+                    "fecha": fecha_str,
+                    "dia": dia_semana,
+                    "hora": hora_turno,
+                    "ocupado": False,
+                    "nombre": None,
+                    "apellido": None,
+                    "dni": None
+                })
+        fecha_inicio += timedelta(days=1)
 
-    collection.insert_many(turnos)
-    print("Turnos inicializados correctamente.")
+    if turnos:
+        collection.insert_many(turnos)
+        print("Turnos nuevos inicializados correctamente.")
+    else:
+        print("No se necesitan inicializar nuevos turnos.")
+
+# Función para validar fecha
+def validar_fecha(fecha):
+    try:
+        datetime.strptime(fecha, "%Y-%m-%d")
+        return True
+    except ValueError:
+        return False
+
+# Función para validar hora
+def validar_hora(hora):
+    # Verificar el formato exacto HH:MM
+    if re.match(r"^\d{2}:\d{2}$", hora):
+        try:
+            datetime.strptime(hora, "%H:%M")
+            return True
+        except ValueError:
+            return False
+    return False
 
 # Función para asignar un turno
 def asignar_turno(fecha, hora, nombre, apellido, dni):
@@ -64,24 +95,17 @@ def mostrar_turnos_ocupados():
     for turno in turnos_ocupados:
         print(f"Fecha: {turno['fecha']} - Hora: {turno['hora']} - Paciente: {turno['nombre']} {turno['apellido']}")
 
-###############################################################################################################
-###############################################################################################################
-
-
-
-
-
-
 # Función para mostrar turnos disponibles
 def mostrar_turnos_disponibles():
-    fecha_actual = datetime.now().strftime("%Y-%m-%d")
-    fecha_limite = (datetime.now() + timedelta(days=14)).strftime("%Y-%m-%d")
-    
     dia = input("Ingrese el día de la semana que le interesa: ")
     fecha = input("Ingrese la fecha (formato YYYY-MM-DD): ")
+    
+    if not validar_fecha(fecha):
+        print("Error: Fecha inválida. Por favor, ingrese la fecha en el formato YYYY-MM-DD.")
+        return
 
     turnos_disponibles = collection.find({
-        "dia": dia, 
+        "dia": dia,
         "fecha": fecha,
         "ocupado": False
     }).sort("hora", pymongo.ASCENDING)
@@ -102,25 +126,50 @@ if __name__ == "__main__":
         print("3. Mostrar turnos ocupados")
         print("4. Mostrar turnos disponibles")
         print("5. Salir")
-        
+
         opcion = input("Seleccione una opción (1-5): ")
-        
+
         if opcion == "1":
-            fecha = input("Ingrese la fecha (formato YYYY-MM-DD): ")
-            hora = input("Ingrese la hora (formato HH:MM): ")
+            while True:
+                fecha = input("Ingrese la fecha (formato YYYY-MM-DD): ")
+                if validar_fecha(fecha):
+                    break
+                print("Error: Fecha inválida. Por favor, ingrese la fecha en el formato YYYY-MM-DD.")
+            
+            while True:
+                hora = input("Ingrese la hora (formato HH:MM): ")
+                if validar_hora(hora):
+                    break
+                print("Error: Hora inválida. Por favor, ingrese la hora en el formato HH:MM.")
+            
             nombre = input("Ingrese el nombre: ")
             apellido = input("Ingrese el apellido: ")
             dni = input("Ingrese el DNI: ")
             asignar_turno(fecha, hora, nombre, apellido, dni)
+        
         elif opcion == "2":
-            fecha = input("Ingrese la fecha (formato YYYY-MM-DD): ")
-            hora = input("Ingrese la hora del turno a cancelar (formato HH:MM): ")
+            while True:
+                fecha = input("Ingrese la fecha (formato YYYY-MM-DD): ")
+                if validar_fecha(fecha):
+                    break
+                print("Error: Fecha inválida. Por favor, ingrese la fecha en el formato YYYY-MM-DD.")
+            
+            while True:
+                hora = input("Ingrese la hora del turno a cancelar (formato HH:MM): ")
+                if validar_hora(hora):
+                    break
+                print("Error: Hora inválida. Por favor, ingrese la hora en el formato HH:MM.")
+            
             cancelar_turno(fecha, hora)
+        
         elif opcion == "3":
             mostrar_turnos_ocupados()
+        
         elif opcion == "4":
             mostrar_turnos_disponibles()
+        
         elif opcion == "5":
             break
+        
         else:
             print("Opción no válida. Por favor, intente de nuevo.")
