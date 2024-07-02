@@ -1,15 +1,68 @@
 import pymongo
 from datetime import datetime, timedelta
 import re
+import json
+import os
 
-# Conectarse a MongoDB (hay que tener MongoDB abierto de manera local)
-client = pymongo.MongoClient("mongodb://localhost:27017/")
-db = client["Consultorio_medico"]  # servidor
-collection = db["Turnos"]
+# Funciones de conexión y manejo de MongoDB
+def establecer_conexion():
+    try:
+        client = pymongo.MongoClient("mongodb://unnoba:12345@localhost:27017/")
+        db = client["Consultorio_medico"]
+        collection = db["Turnos"]
+        print("Conexión a MongoDB establecida correctamente.")
+        return collection
+    except pymongo.errors.ConnectionFailure:
+        print("No se pudo conectar a MongoDB. Guardando datos temporalmente en archivo.")
+        return None
 
+# Guardar turnos en archivo temporal
+def guardar_turno_temporal(turno):
+    with open("turnos_temporales.txt", "a") as file:
+        file.write(json.dumps(turno) + "\n")
 
-# Inicializar la colección Turnos si está vacía
-def inicializar_turnos():
+# Cargar turnos desde archivo temporal
+def cargar_turnos_temporales():
+    turnos = []
+    if os.path.exists("turnos_temporales.txt"):
+        with open("turnos_temporales.txt", "r") as file:
+            for line in file:
+                turnos.append(json.loads(line))
+    else:
+        with open("turnos_temporales.txt", "w") as file:
+            pass
+    return turnos
+
+# Guardar turnos solapados
+def guardar_turno_solapado(turno):
+    with open("turnos_solapados.txt", "a") as file:
+        file.write(json.dumps(turno) + "\n")
+
+# Transferir turnos temporales a MongoDB
+def transferir_turnos_temporales(collection):
+    turnos_temporales = cargar_turnos_temporales()
+    if not turnos_temporales:
+        print("No hay turnos temporales para transferir.")
+        return
+    
+    exito_transferencia = True
+    
+    for turno in turnos_temporales:
+        existing_turno = collection.find_one({"fecha": turno["fecha"], "hora": turno["hora"]})
+        if existing_turno:
+            guardar_turno_solapado(turno)
+        else:
+            collection.insert_one(turno)
+            exito_transferencia = False  # Indicar que al menos un turno no se pudo transferir
+    
+    if exito_transferencia:
+        os.remove("turnos_temporales.txt")
+        print("Turnos temporales transferidos a MongoDB y archivo temporal eliminado.")
+    else:
+        print("Algunos turnos temporales no se pudieron transferir completamente a MongoDB.")
+
+# Funciones para operaciones con MongoDB
+def inicializar_turnos(collection):
     # Limpiar turnos antiguos
     fecha_hoy = datetime.now().strftime("%Y-%m-%d")
     collection.delete_many({"fecha": {"$lt": fecha_hoy}})
@@ -37,7 +90,7 @@ def inicializar_turnos():
                     "nombre": None,
                     "apellido": None,
                     "dni": None,
-                    "mutual": None  # Nuevo campo para la mutual
+                    "mutual": None
                 })
         fecha_inicio += timedelta(days=1)
 
@@ -47,7 +100,7 @@ def inicializar_turnos():
     else:
         print("No se necesitan inicializar nuevos turnos.")
 
-# Función para validar fecha
+# Funciones de validación
 def validar_fecha(fecha):
     try:
         datetime.strptime(fecha, "%Y-%m-%d")
@@ -55,9 +108,7 @@ def validar_fecha(fecha):
     except ValueError:
         return False
 
-# Función para validar hora
 def validar_hora(hora):
-    # Verificar el formato exacto HH:MM
     if re.match(r"^\d{2}:\d{2}$", hora):
         try:
             datetime.strptime(hora, "%H:%M")
@@ -66,16 +117,14 @@ def validar_hora(hora):
             return False
     return False
 
-# Función para validar que no haya números en nombre o apellido
 def validar_nombre_apellido(texto):
     return texto.isalpha()
 
-# Función para validar que el DNI sea numérico
 def validar_dni(dni):
     return dni.isdigit()
 
-# Función para asignar un turno
-def asignar_turno(fecha, hora):
+# Funciones para operaciones con turnos
+def asignar_turno(collection, fecha, hora):
     nombre = input("Ingrese el nombre: ")
     while not validar_nombre_apellido(nombre):
         print("Error: El nombre no puede contener números.")
@@ -96,42 +145,57 @@ def asignar_turno(fecha, hora):
     if tiene_mutual == 's':
         mutual = input("Ingrese el nombre de la mutual: ")
 
-    turno = collection.find_one({"fecha": fecha, "hora": hora})
-    if turno and turno["ocupado"]:
-        print("¡El turno para esa fecha ya está ocupado!")
-    else:
-        collection.update_one(
-            {"fecha": fecha, "hora": hora},
-            {"$set": {"ocupado": True, "nombre": nombre, "apellido": apellido, "dni": dni, "mutual": mutual}}
-        )
-        print(f"Turno asignado correctamente para la fecha: {fecha} a las {hora}.")
-
-# Función para cancelar un turno
-def cancelar_turno(fecha, hora):
-    turno = collection.find_one({"fecha": fecha, "hora": hora, "ocupado": True})
-    if turno:
-        collection.update_one(
-            {"fecha": fecha, "hora": hora},
-            {"$set": {"ocupado": False, "nombre": None, "apellido": None, "dni": None, "mutual": None}}
-        )
-        print(f"Turno cancelado correctamente para la fecha: {fecha} a las {hora}.")
-    else:
-        print("No se encontró un turno para esa fecha y hora.")
-
-# Función para mostrar turnos ocupados
-def mostrar_turnos_ocupados():
-    turnos_ocupados = collection.find({"ocupado": True}).sort([("fecha", pymongo.ASCENDING), ("hora", pymongo.ASCENDING)])
-    print("Turnos ocupados:")
-    for turno in turnos_ocupados:
-        nombre_apellido = f"{turno['nombre']} {turno['apellido']}"
-        if 'mutual' in turno:
-            mutual = turno['mutual']
+    turno = {
+        "fecha": fecha,
+        "hora": hora,
+        "ocupado": True,
+        "nombre": nombre,
+        "apellido": apellido,
+        "dni": dni,
+        "mutual": mutual
+    }
+    
+    if collection is not None:
+        existing_turno = collection.find_one({"fecha": fecha, "hora": hora})
+        if existing_turno and existing_turno["ocupado"]:
+            print("¡El turno para esa fecha ya está ocupado!")
         else:
-            mutual = 'No tiene'
-        print(f"Fecha: {turno['fecha']} - Hora: {turno['hora']} - Paciente: {nombre_apellido} - Mutual: {mutual}")
+            collection.update_one(
+                {"fecha": fecha, "hora": hora},
+                {"$set": turno},
+                upsert=True
+            )
+            print(f"Turno asignado correctamente para la fecha: {fecha} a las {hora}.")
+    else:
+        guardar_turno_temporal(turno)
+        print(f"Turno guardado temporalmente para la fecha: {fecha} a las {hora}.")
 
-# Función para mostrar turnos disponibles
-def mostrar_turnos_disponibles():
+def cancelar_turno(collection, fecha, hora):
+    if collection is not None:
+        turno = collection.find_one({"fecha": fecha, "hora": hora, "ocupado": True})
+        if turno:
+            collection.update_one(
+                {"fecha": fecha, "hora": hora},
+                {"$set": {"ocupado": False, "nombre": None, "apellido": None, "dni": None, "mutual": None}}
+            )
+            print(f"Turno cancelado correctamente para la fecha: {fecha} a las {hora}.")
+        else:
+            print("No se encontró un turno para esa fecha y hora.")
+    else:
+        print("No se puede cancelar el turno porque no hay conexión a MongoDB.")
+
+def mostrar_turnos_ocupados(collection):
+    if collection is not None:
+        turnos_ocupados = collection.find({"ocupado": True}).sort([("fecha", pymongo.ASCENDING), ("hora", pymongo.ASCENDING)])
+        print("Turnos ocupados:")
+        for turno in turnos_ocupados:
+            nombre_apellido = f"{turno['nombre']} {turno['apellido']}"
+            mutual = turno.get('mutual', 'No tiene')
+            print(f"Fecha: {turno['fecha']} - Hora: {turno['hora']} - Paciente: {nombre_apellido} - Mutual: {mutual}")
+    else:
+        print("No se puede mostrar turnos ocupados porque no hay conexión a MongoDB.")
+
+def mostrar_turnos_disponibles(collection):
     dia = input("Ingrese el día de la semana que le interesa: ")
     fecha = input("Ingrese la fecha (formato YYYY-MM-DD): ")
     
@@ -139,80 +203,92 @@ def mostrar_turnos_disponibles():
         print("Error: Fecha inválida. Por favor, ingrese la fecha en el formato YYYY-MM-DD.")
         return
 
-    turnos_disponibles = collection.find({
-        "dia": dia,
-        "fecha": fecha,
-        "ocupado": False
-    }).sort("hora", pymongo.ASCENDING)
+    if collection is not None:
+        turnos_disponibles = collection.find({
+            "dia": dia,
+            "fecha": fecha,
+            "ocupado": False
+        }).sort("hora", pymongo.ASCENDING)
 
-    print(f"Turnos disponibles para {dia}, {fecha}:")
-    for turno in turnos_disponibles:
-        print(f"Fecha: {turno['fecha']} - Hora: {turno['hora']}")
+        print(f"Turnos disponibles para {dia}, {fecha}:")
+        for turno in turnos_disponibles:
+            print(f"Fecha: {turno['fecha']} - Hora: {turno['hora']}")
+    else:
+        print("No se puede mostrar turnos disponibles porque no hay conexión a MongoDB.")
 
-# Función para mostrar turnos con mutual
-def mostrar_turnos_mutual():
-    turnos_con_mutual = collection.find({"ocupado": True, "mutual": {"$ne": None}}).sort([("fecha", pymongo.ASCENDING), ("hora", pymongo.ASCENDING)])
-    print("Turnos con mutual:")
-    for turno in turnos_con_mutual:
-        print(f"Fecha: {turno['fecha']} - Hora: {turno['hora']} - Paciente: {turno['nombre']} {turno['apellido']} - Mutual: {turno['mutual']}")
+def mostrar_turnos_mutual(collection):
+    if collection is not None:
+        turnos_con_mutual = collection.find({"ocupado": True, "mutual": {"$ne": None}}).sort([("fecha", pymongo.ASCENDING), ("hora", pymongo.ASCENDING)])
+        print("Turnos con mutual:")
+        for turno in turnos_con_mutual:
+            nombre_apellido = f"{turno['nombre']} {turno['apellido']}"
+            mutual = turno['mutual']
+            print(f"Fecha: {turno['fecha']} - Hora: {turno['hora']} - Paciente: {nombre_apellido} - Mutual: {mutual}")
+    else:
+        print("No se puede mostrar turnos con mutual porque no hay conexión a MongoDB.")
 
-# Inicializar turnos si es necesario
-inicializar_turnos()
-
-# Ejemplo de uso
+# Programa principal
 if __name__ == "__main__":
-    while True:
-        print("\nOpciones:")
-        print("1. Asignar un nuevo turno")
-        print("2. Cancelar un turno")
-        print("3. Mostrar turnos ocupados")
-        print("4. Mostrar turnos con mutual")
-        print("5. Mostrar turnos disponibles")
-        print("6. Salir")
+    collection = establecer_conexion()
 
-        opcion = input("Seleccione una opción (1-6): ")
+    if collection is not None:
+        inicializar_turnos(collection)
+        transferir_turnos_temporales(collection)
 
-        if opcion == "1":
-            while True:
-                fecha = input("Ingrese la fecha (formato YYYY-MM-DD): ")
-                if not validar_fecha(fecha):
-                    print("Error: Fecha inválida. Por favor, ingrese la fecha en el formato YYYY-MM-DD.")
-                    continue
+        while True:
+            print("\nOpciones:")
+            print("1. Asignar un nuevo turno")
+            print("2. Cancelar un turno")
+            print("3. Mostrar turnos ocupados")
+            print("4. Mostrar turnos con mutual")
+            print("5. Mostrar turnos disponibles")
+            print("6. Salir")
+
+            opcion = input("Seleccione una opción (1-6): ")
+
+            if opcion == "1":
+                while True:
+                    fecha = input("Ingrese la fecha (formato YYYY-MM-DD): ")
+                    if not validar_fecha(fecha):
+                        print("Error: Fecha inválida. Por favor, ingrese la fecha en el formato YYYY-MM-DD.")
+                        continue
+                    
+                    hora = input("Ingrese la hora (formato HH:MM): ")
+                    if not validar_hora(hora):
+                        print("Error: Hora inválida. Por favor, ingrese la hora en el formato HH:MM.")
+                        continue
+                    
+                    asignar_turno(collection, fecha, hora)
+                    break
                 
-                hora = input("Ingrese la hora (formato HH:MM): ")
-                if not validar_hora(hora):
-                    print("Error: Hora inválida. Por favor, ingrese la hora en el formato HH:MM.")
-                    continue
+            elif opcion == "2":
+                while True:
+                    fecha = input("Ingrese la fecha (formato YYYY-MM-DD): ")
+                    if not validar_fecha(fecha):
+                        print("Error: Fecha inválida. Por favor, ingrese la fecha en el formato YYYY-MM-DD.")
+                        continue
+                    
+                    hora = input("Ingrese la hora del turno a cancelar (formato HH:MM): ")
+                    if not validar_hora(hora):
+                        print("Error: Hora inválida. Por favor, ingrese la hora en el formato HH:MM.")
+                        continue
+                    
+                    cancelar_turno(collection, fecha, hora)
+                    break
                 
-                asignar_turno(fecha, hora)
+            elif opcion == "3":
+                mostrar_turnos_ocupados(collection)
+            
+            elif opcion == "4":
+                mostrar_turnos_mutual(collection)
+
+            elif opcion == "5":
+                mostrar_turnos_disponibles(collection)
+            
+            elif opcion == "6":
                 break
             
-        elif opcion == "2":
-            while True:
-                fecha = input("Ingrese la fecha (formato YYYY-MM-DD): ")
-                if not validar_fecha(fecha):
-                    print("Error: Fecha inválida. Por favor, ingrese la fecha en el formato YYYY-MM-DD.")
-                    continue
-                
-                hora = input("Ingrese la hora del turno a cancelar (formato HH:MM): ")
-                if not validar_hora(hora):
-                    print("Error: Hora inválida. Por favor, ingrese la hora en el formato HH:MM.")
-                    continue
-                
-                cancelar_turno(fecha, hora)
-                break
-            
-        elif opcion == "3":
-            mostrar_turnos_ocupados()
-        
-        elif opcion == "4":
-            mostrar_turnos_mutual()
-
-        elif opcion == "5":
-            mostrar_turnos_disponibles()
-        
-        elif opcion == "6":
-            break
-        
-        else:
-            print("Opción no válida. Por favor, intente de nuevo.")
+            else:
+                print("Opción no válida. Por favor, intente de nuevo.")
+    else:
+        print("No se pudo establecer conexión con MongoDB. El programa finalizará.")
